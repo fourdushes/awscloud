@@ -12,6 +12,7 @@ public class ChangePasswordRequest {
     private String newPassword;
     private String checkNewPassword;
     private UserType userType;
+    private String tempToken; // 임시 토큰 추가
     
 
 }

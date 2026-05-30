@@ -1,7 +1,10 @@
 package tohear.hearo.user.institution;
 
+import java.time.Duration;
 import java.util.List;
+import java.util.UUID;
 
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,6 +31,7 @@ public class InstitutionsUserService implements UserService {
     private final JwtTokenProvider tokenProvider;
     private final PasswordEncoder passwordEncoder;
     private final CommonUserService commonUserService;
+    private final StringRedisTemplate redisTemplate;
 
      @Override
     public boolean supports(UserType userType) {
@@ -79,6 +83,12 @@ public class InstitutionsUserService implements UserService {
     @Override
     public ToChangePasswordResponse validateToChangePassword(ToChangePasswordRequest request) {
 
+        // 이메일 인증 여부 확인
+       String verified = redisTemplate.opsForValue().get("mail-verified:" + request.getEmail());
+       if (!"true".equals(verified)) {
+            throw new IllegalArgumentException("이메일 인증이 완료되지 않았습니다. 이메일 인증을 먼저 진행해주세요.");
+        }
+
         InstitutionsUser findUser = userRepository.findByEmail(request.getEmail()).orElseThrow(
             () -> new IllegalArgumentException("이메일이 올바르지 않습니다. " + request.getEmail()));
 
@@ -86,14 +96,24 @@ public class InstitutionsUserService implements UserService {
             throw new IllegalArgumentException("이름이 올바르지 않습니다. " + request.getName());
         }
 
+        String token = UUID.randomUUID().toString(); // 랜덤한 토큰 생성
+        String redisKey = "password-reset:" + findUser.getId();
+        redisTemplate.opsForValue().set(redisKey, token, Duration.ofMinutes(3)); // 토큰을 Redis에 저장하고 3분 동안 유효하도록 설정
 
-        return new ToChangePasswordResponse(findUser.getId(), UserType.INSTITUTIONS);
+        return new ToChangePasswordResponse(findUser.getId(), UserType.INSTITUTIONS, token);
 
     }
 
     @Override
     @Transactional
     public String changePassword(ChangePasswordRequest request) {
+
+        String redisKey = "password-reset:" + request.getId();
+        String savedToken = (String) redisTemplate.opsForValue().get(redisKey);
+
+        if (savedToken == null || !savedToken.equals(request.getTempToken())) {
+            throw new IllegalArgumentException("인증 시간이 만료되었거나 유효하지 않은 접근입니다. 처음부터 다시 시도해주세요.");
+        }
 
         InstitutionsUser findUser = userRepository.findById(request.getId()).orElseThrow(
             () -> new IllegalArgumentException("아이디가 올바르지 않습니다. " + request.getId()));
@@ -104,6 +124,8 @@ public class InstitutionsUserService implements UserService {
 
         String encodedNewPassword = passwordEncoder.encode(request.getNewPassword());
         findUser.changePassword(encodedNewPassword);
+
+        redisTemplate.delete(redisKey);
 
         return findUser.getId();
     }
